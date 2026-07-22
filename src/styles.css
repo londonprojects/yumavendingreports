@@ -514,6 +514,48 @@ tbody tr.clickable:hover {
   cursor: pointer;
 }
 
+/* ---------- Bar chart ---------- */
+.bar-chart {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding-top: 8px;
+}
+
+.bar-chart-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 3px;
+}
+
+.bar-chart-track {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+}
+
+.bar-chart-bar {
+  width: 100%;
+  min-height: 1px;
+  border-radius: 4px 4px 0 0;
+  transition: height 0.15s ease;
+}
+
+.bar-chart-bar:hover {
+  opacity: 0.75;
+}
+
+.bar-chart-label {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-3);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ---------- Stock bar ---------- */
 .stock-bar {
   height: 8px;

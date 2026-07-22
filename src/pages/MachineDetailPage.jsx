@@ -2,16 +2,24 @@ import React, {useEffect, useMemo, useState} from 'react';
 import {useParams, Link} from 'react-router-dom';
 import {useApp} from '../context/AppContext';
 import {StatusBadge, StockBar, SeverityBadge, Spinner, EmptyState, Thumb} from '../components/ui';
-import {getStockSeverity, getErrorMessage, getCurrencySymbol} from '../api';
+import {BarChart} from '../components/BarChart';
+import {getStockSeverity, getErrorMessage, getCurrencySymbol, toLocalDateString} from '../api';
 import {loadMachineSalesHistory} from '../api/loadAppData';
 
 const HISTORY_MONTHS = 12;
+const DAILY_DAYS = 30;
 
 // "2026-07" → "Jul 2026"
 const monthLabel = key => {
   const [y, m] = key.split('-');
   const d = new Date(Number(y), Number(m) - 1, 1);
   return d.toLocaleString('default', {month: 'short', year: 'numeric'});
+};
+
+// Excludes unpaid/refunded sales the same way everywhere they're tallied.
+const isCountedSale = o => {
+  const s = String(o.status || '').toLowerCase();
+  return s !== 'unpaid' && s !== 'refunded' && !o.refund;
 };
 
 const MachineDetailPage = () => {
@@ -112,13 +120,9 @@ const MachineDetailPage = () => {
   // while that loads so the current month shows immediately.
   const monthlyOrders = history ?? orders;
   const monthly = useMemo(() => {
-    const counted = o => {
-      const s = String(o.status || '').toLowerCase();
-      return s !== 'unpaid' && s !== 'refunded' && !o.refund;
-    };
     const byMonth = new Map();
     monthlyOrders.forEach(o => {
-      if (String(o.deviceId) !== String(id) || !counted(o)) return;
+      if (String(o.deviceId) !== String(id) || !isCountedSale(o)) return;
       const key = (o.date || '').slice(0, 7); // YYYY-MM
       if (!key) return;
       let e = byMonth.get(key);
@@ -143,6 +147,72 @@ const MachineDetailPage = () => {
         avgUnitCost: e.units ? e.cogs / e.units : 0,
       }));
   }, [monthlyOrders, id, costById]);
+
+  // Same monthly totals, oldest → newest, for the trend chart (the table above
+  // reads newest-first).
+  const monthlyChart = useMemo(() => [...monthly].reverse(), [monthly]);
+
+  // Monthly totals rolled up by calendar year. Limited to whatever the 12-month
+  // history window actually covers, so this is mostly useful when that window
+  // straddles a year boundary.
+  const yearly = useMemo(() => {
+    const byYear = new Map();
+    monthly.forEach(mo => {
+      const y = mo.key.slice(0, 4);
+      let e = byYear.get(y);
+      if (!e) {
+        e = {key: y, label: y, sales: 0, units: 0, revenue: 0};
+        byYear.set(y, e);
+      }
+      e.sales += mo.sales;
+      e.units += mo.units;
+      e.revenue += mo.revenue;
+    });
+    return Array.from(byYear.values()).sort((a, b) => a.key.localeCompare(b.key));
+  }, [monthly]);
+
+  // Day-by-day totals for the trailing DAILY_DAYS days, zero-filled so the chart
+  // reads as a continuous trend rather than skipping quiet days.
+  const daily = useMemo(() => {
+    const byDay = new Map();
+    monthlyOrders.forEach(o => {
+      if (String(o.deviceId) !== String(id) || !isCountedSale(o)) return;
+      const key = (o.date || '').slice(0, 10); // YYYY-MM-DD
+      if (!key) return;
+      let e = byDay.get(key);
+      if (!e) {
+        e = {sales: 0, units: 0, revenue: 0};
+        byDay.set(key, e);
+      }
+      e.sales += 1;
+      e.revenue += o.amount || 0;
+      (o.items || []).forEach(it => {
+        e.units += Number(it.quantity) || 1;
+      });
+    });
+
+    const days = [];
+    const today = new Date();
+    for (let i = DAILY_DAYS - 1; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      const key = toLocalDateString(d);
+      const e = byDay.get(key);
+      days.push({
+        key,
+        label: String(d.getDate()),
+        fullLabel: d.toLocaleDateString('default', {day: 'numeric', month: 'short', year: 'numeric'}),
+        sales: e?.sales || 0,
+        units: e?.units || 0,
+        revenue: e?.revenue || 0,
+      });
+    }
+    return days;
+  }, [monthlyOrders, id]);
+
+  const [chartRange, setChartRange] = useState('daily');
+  const chartData = chartRange === 'daily' ? daily : chartRange === 'yearly' ? yearly : monthlyChart;
+  const chartHasSales = chartData.some(d => d.sales > 0);
 
   const totals = useMemo(() => {
     let current = 0;
@@ -216,6 +286,48 @@ const MachineDetailPage = () => {
           </div>
         </div>
       </div>
+
+      <div className="section-title">
+        📈 Sales trends
+        <div className="pill-tabs" style={{marginLeft: 'auto'}}>
+          {[
+            ['daily', 'Daily'],
+            ['monthly', 'Monthly'],
+            ['yearly', 'Yearly'],
+          ].map(([r, label]) => (
+            <button key={r} className={chartRange === r ? 'active' : ''} onClick={() => setChartRange(r)}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {historyLoading && chartData.length === 0 ? (
+        <div className="card card-pad">
+          <Spinner />
+        </div>
+      ) : !chartHasSales ? (
+        <div className="card card-pad">
+          <EmptyState
+            emoji="📈"
+            title="No sales for this machine"
+            hint={
+              chartRange === 'daily'
+                ? `No sales in the last ${DAILY_DAYS} days.`
+                : chartRange === 'yearly'
+                  ? 'No sales in the loaded history.'
+                  : `No sales in the last ${HISTORY_MONTHS} months.`
+            }
+          />
+        </div>
+      ) : (
+        <div className="card card-pad" style={{marginBottom: 8}}>
+          <BarChart
+            data={chartData}
+            formatValue={v => `${cur}${v.toFixed(2)}`}
+            labelEvery={chartRange === 'daily' ? 5 : 1}
+          />
+        </div>
+      )}
 
       <div className="section-title">
         📅 Monthly sales &amp; average cost
