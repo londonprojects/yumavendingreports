@@ -1,10 +1,12 @@
-import React, {useMemo, useState} from 'react';
+import React, {useEffect, useMemo, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
 import {useApp} from '../context/AppContext';
 import {StatusBadge, EmptyState, Spinner} from '../components/ui';
+import {MachinesMap} from '../components/MachinesMap';
 import {palette} from '../theme';
 import {getCurrencySymbol} from '../api';
 import {buildRestockPriority} from '../api/insights';
+import {extractPlaceQuery, geocodePlaces, geocodeKey} from '../api/geocode';
 
 // Small at-a-glance restock indicator for a machine card: severity-colored dot
 // plus, once sales history is in, the estimated daily profit lost to letting
@@ -35,7 +37,47 @@ const MachinesPage = () => {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiText, setAiText] = useState(null);
   const [aiError, setAiError] = useState(null);
+  const [geocoded, setGeocoded] = useState({}); // query -> {lat, lng, displayName} | null
+  const [geocoding, setGeocoding] = useState(false);
   const cur = getCurrencySymbol(currencyCode);
+
+  // The API has no location/lat-lng data at all (marketLocation is always
+  // empty on this account) — the only location signal is whatever site name
+  // is baked into the machine's display name, so resolve that via a free
+  // OpenStreetMap lookup, biased to the device's own time zone where known
+  // (otherwise a generic name like "Hayes" can resolve to a same-named place
+  // on the wrong continent). Best-effort: ambiguous names may still mismatch,
+  // and non-address names (demo/showroom units) just won't resolve.
+  useEffect(() => {
+    if (devices.length === 0) return;
+    let active = true;
+    setGeocoding(true);
+    const items = devices.map(d => ({query: extractPlaceQuery(d.name), timeZone: d.timeZone}));
+    geocodePlaces(items).then(results => {
+      if (active) {
+        setGeocoded(results);
+        setGeocoding(false);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [devices]);
+
+  const mapPins = useMemo(() => {
+    return devices
+      .map(d => {
+        const hit = geocoded[geocodeKey(extractPlaceQuery(d.name), d.timeZone)];
+        if (!hit) return null;
+        return {deviceId: d.id, name: d.name, status: d.status, lat: hit.lat, lng: hit.lng};
+      })
+      .filter(Boolean);
+  }, [devices, geocoded]);
+
+  const unresolvedDevices = useMemo(() => {
+    if (geocoding) return [];
+    return devices.filter(d => !geocoded[geocodeKey(extractPlaceQuery(d.name), d.timeZone)]);
+  }, [devices, geocoded, geocoding]);
 
   // Stock per machine, derived from the inventory endpoint's per-market data.
   const stockByMachine = useMemo(() => {
@@ -144,6 +186,45 @@ stockouts going forward.`,
           {devices.length} vending machines
         </div>
       </div>
+
+      <div className="section-title">
+        🗺️ Machine locations
+        <span className="muted" style={{marginLeft: 'auto', fontSize: 12, fontWeight: 400}}>
+          {geocoding
+            ? 'Locating…'
+            : `${mapPins.length} of ${devices.length} placed automatically from their site name`}
+        </span>
+      </div>
+      {geocoding && mapPins.length === 0 ? (
+        <div className="card card-pad">
+          <Spinner />
+        </div>
+      ) : mapPins.length === 0 ? (
+        <div className="card card-pad">
+          <EmptyState
+            emoji="🗺️"
+            title="No machines could be located"
+            hint="None of the machine names resolved to a real place via OpenStreetMap."
+          />
+        </div>
+      ) : (
+        <div className="card card-pad" style={{marginBottom: 8}}>
+          <MachinesMap
+            pins={mapPins}
+            onSelectDevice={id => navigate(`/machines/${encodeURIComponent(id)}`)}
+          />
+          <div className="muted" style={{fontSize: 12, marginTop: 10}}>
+            Best-effort: pins come from geocoding each machine's site name via OpenStreetMap (no API key, no exact
+            address on file), so a few may be off or missing entirely.
+            {!geocoding && unresolvedDevices.length > 0 && (
+              <>
+                {' '}
+                Couldn't place {unresolvedDevices.length}: {unresolvedDevices.map(d => d.name).join(', ')}.
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="section-title">
         ⚡ Restock priority — by profit impact
