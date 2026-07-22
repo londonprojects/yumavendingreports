@@ -5,6 +5,7 @@ import {StatusBadge, StockBar, SeverityBadge, Spinner, EmptyState, Thumb} from '
 import {BarChart} from '../components/BarChart';
 import {getStockSeverity, getErrorMessage, getCurrencySymbol, toLocalDateString} from '../api';
 import {loadMachineSalesHistory} from '../api/loadAppData';
+import {buildMachineOptimization} from '../api/insights';
 
 const HISTORY_MONTHS = 12;
 const DAILY_DAYS = 30;
@@ -29,14 +30,24 @@ const MachineDetailPage = () => {
     inventoryProducts,
     products,
     orders,
+    alerts,
     planogramCache,
     loadPlanogram,
     currencyCode,
+    salesLoading,
   } = useApp();
+  // Velocity comes from `orders`, which loads in a second phase after core
+  // data — until it's arrived, every product reads as zero sales, which the
+  // slot audit would otherwise misread as "remove everything" (same premature-
+  // loading pitfall as the Insights page).
+  const salesPending = salesLoading && orders.length === 0;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [history, setHistory] = useState(null); // this machine's ~12mo of orders
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiText, setAiText] = useState(null);
+  const [aiError, setAiError] = useState(null);
 
   const device = devices.find(d => String(d.id) === String(id));
   const layers = planogramCache[id];
@@ -228,6 +239,99 @@ const MachineDetailPage = () => {
     return {current, capacity, low};
   }, [layers]);
 
+  // Catalog merged for price/cost lookups (products has both; inventoryProducts
+  // fills in anything products is missing) — same pattern as Insights/Machines.
+  const catalog = useMemo(() => {
+    const byId = new Map();
+    products.forEach(p => p.id != null && byId.set(p.id, p));
+    inventoryProducts.forEach(p => {
+      if (p.id != null && !byId.has(p.id)) byId.set(p.id, p);
+    });
+    return Array.from(byId.values());
+  }, [products, inventoryProducts]);
+
+  const stockedProductIds = useMemo(() => new Set(machineProducts.map(p => p.id)), [machineProducts]);
+
+  // Combines this machine's own restock/slot numbers with fleet-wide context
+  // (how it compares to the rest of the fleet, and what sells well elsewhere
+  // that isn't stocked here) — see buildMachineOptimization for why this needs
+  // the global 30-day `orders` feed rather than this page's own long,
+  // machine-scoped `history` (that history has no other machines' orders in it
+  // at all, so it can't support a fleet comparison).
+  // Runs before the "device not found" guard below, so it must tolerate
+  // `device` being undefined on the very first render (before `devices` has
+  // loaded from the API).
+  const optimization = useMemo(() => {
+    if (!device) return {thisMachine: null, fleetAvgProfitAtRisk: 0, slotRows: [], crossSellOpportunities: []};
+    return buildMachineOptimization({device, devices, alerts, orders, catalog, layers, stockedProductIds});
+  }, [device, devices, alerts, orders, catalog, layers, stockedProductIds]);
+
+  const onAskAi = async () => {
+    setAiLoading(true);
+    setAiError(null);
+    setAiText(null);
+    try {
+      const summary = {
+        machine: device.name,
+        thisMachineProfitAtRisk: optimization.thisMachine
+          ? Math.round(optimization.thisMachine.profitAtRisk * 100) / 100
+          : 0,
+        thisMachineCriticalItems: optimization.thisMachine?.criticalCount || 0,
+        thisMachineLowItems: optimization.thisMachine?.warningCount || 0,
+        topItemsNeedingRestock: (optimization.thisMachine?.items || []).slice(0, 6).map(i => ({
+          product: i.productName,
+          stock: i.stock,
+          capacity: i.capacity,
+          severity: i.severity,
+          unitsPerDaySold: Math.round(i.unitsPerDay * 100) / 100,
+          dailyProfitAtRisk: Math.round(i.dailyProfitAtRisk * 100) / 100,
+        })),
+        fleetAverageProfitAtRiskPerMachine: Math.round(optimization.fleetAvgProfitAtRisk * 100) / 100,
+        slotRecommendations: optimization.slotRows
+          .filter(r => r.direction !== 'ok')
+          .slice(0, 10)
+          .map(r => ({
+            product: r.productName,
+            currentSlots: r.currentSlots,
+            recommendedSlots: r.recommendedSlots,
+            direction: r.direction,
+            unitsPerDay: Math.round(r.unitsPerDay * 100) / 100,
+            estimatedDailyProfitImpact: Math.round(r.profitDelta * 100) / 100,
+          })),
+        productsSellingWellElsewhereButNotStockedHere: optimization.crossSellOpportunities.map(c => ({
+          product: c.productName,
+          unitsPerDayInOtherMachines: Math.round(c.unitsPerDayElsewhere * 100) / 100,
+          marginPct: c.marginPct != null ? Math.round(c.marginPct * 1000) / 10 : null,
+        })),
+        currencySymbol: cur,
+      };
+
+      const res = await fetch('/api/insights', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          summary,
+          task: `This is one specific vending machine, with its own restock needs
+plus context on how it compares to the rest of the fleet and what sells well in
+other machines that isn't stocked here. Write a focused restocking
+optimization plan for THIS machine only: (1) what to restock first and why
+(cite the profit-at-risk numbers), (2) how this machine's profit-at-risk
+compares to the fleet average, (3) which products should move to 2 slots or be
+removed, with the estimated profit impact, (4) 2-3 specific products worth
+adding here based on what sells well elsewhere. Keep it under 300 words and
+cite actual product names and numbers from the JSON.`,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `Request failed (${res.status})`);
+      setAiText(data.text);
+    } catch (err) {
+      setAiError(err.message || 'Something went wrong asking the AI.');
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
   if (!device) {
     return (
       <div className="card card-pad">
@@ -286,6 +390,59 @@ const MachineDetailPage = () => {
           </div>
         </div>
       </div>
+
+      <div className="section-title">
+        🤖 AI restock optimization
+        <button className="btn" style={{marginLeft: 'auto'}} onClick={onAskAi} disabled={aiLoading || salesPending}>
+          {aiLoading ? 'Thinking…' : '✨ Ask AI how to restock this machine'}
+        </button>
+      </div>
+      {salesPending ? (
+        <div className="card card-pad" style={{marginBottom: 8}}>
+          <Spinner />
+        </div>
+      ) : (
+        <div className="card card-pad" style={{marginBottom: 8}}>
+          <div style={{display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: aiText || aiError ? 16 : 0}}>
+            <div>
+              <div className="muted" style={{fontSize: 12}}>This machine's profit at risk</div>
+              <div style={{fontSize: 20, fontWeight: 700}}>
+                {cur}
+                {(optimization.thisMachine?.profitAtRisk || 0).toFixed(2)}/day
+              </div>
+              <div className="muted" style={{fontSize: 12}}>
+                fleet average: {cur}
+                {optimization.fleetAvgProfitAtRisk.toFixed(2)}/day
+              </div>
+            </div>
+            <div>
+              <div className="muted" style={{fontSize: 12}}>Slot changes recommended here</div>
+              <div style={{fontSize: 20, fontWeight: 700}}>
+                {optimization.slotRows.filter(r => r.direction !== 'ok').length}
+              </div>
+              <div className="muted" style={{fontSize: 12}}>
+                {optimization.slotRows.filter(r => r.direction === 'remove').length} to remove,{' '}
+                {optimization.slotRows.filter(r => r.direction === 'increase').length} to add a slot
+              </div>
+            </div>
+            <div style={{flex: 1, minWidth: 220}}>
+              <div className="muted" style={{fontSize: 12}}>Worth adding — sells well elsewhere, not stocked here</div>
+              {optimization.crossSellOpportunities.length === 0 ? (
+                <div style={{fontSize: 13, marginTop: 4}}>Nothing stands out right now.</div>
+              ) : (
+                <div style={{fontSize: 13, marginTop: 4}}>
+                  {optimization.crossSellOpportunities.slice(0, 3).map(c => c.productName).join(', ')}
+                </div>
+              )}
+            </div>
+          </div>
+          {aiError ? (
+            <div className="error-banner" style={{marginBottom: 0}}>{aiError}</div>
+          ) : aiText ? (
+            <div style={{whiteSpace: 'pre-wrap', lineHeight: 1.6, fontSize: 14}}>{aiText}</div>
+          ) : null}
+        </div>
+      )}
 
       <div className="section-title">
         📈 Sales trends

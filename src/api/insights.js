@@ -44,7 +44,7 @@ export const buildMarginLeaderboard = (catalog = [], topN = 5) => {
 // A product's per-unit margin, or null when the catalog's cost value can't be
 // trusted (missing, or ≥ price — see buildMarginLeaderboard for why that's
 // treated as bad data rather than a real loss-making item).
-const reliableMargin = info => {
+export const reliableMargin = info => {
   if (!info || !(info.price > 0) || !(info.cost > 0) || info.cost >= info.price) return null;
   return info.price - info.cost;
 };
@@ -374,4 +374,69 @@ export const buildProfitOverTime = ({orders = [], devices = [], catalog = [], da
   });
 
   return {labels, series, totalProfit: Array.from(totalByDevice.values()).reduce((s, v) => s + v, 0)};
+};
+
+// Everything needed to answer "how should I restock this specific machine" —
+// combines the machine's own numbers with fleet-wide context, so the AI (or
+// the deterministic table shown before asking it) isn't reasoning about this
+// machine in isolation:
+//  - thisMachine: this device's entry from the fleet-wide restock-priority
+//    ranking (profit at risk, critical/low counts, worst items), or null if
+//    it doesn't currently need restocking.
+//  - fleetAvgProfitAtRisk: how the fleet as a whole is doing, for comparison.
+//  - slotRows: this machine's own 1-vs-2-slot / remove recommendations (same
+//    scoring as the Insights page, scoped to just this device).
+//  - crossSellOpportunities: products selling well in OTHER machines that
+//    aren't currently stocked here — the actual "learn from other machines"
+//    signal, not just this machine's own history.
+export const buildMachineOptimization = ({
+  device,
+  devices = [],
+  alerts = [],
+  orders = [],
+  catalog = [],
+  layers = null,
+  stockedProductIds = new Set(),
+}) => {
+  const fleetPriority = buildRestockPriority({devices, alerts, orders, catalog});
+  const thisMachine = fleetPriority.find(p => String(p.deviceId) === String(device.id)) || null;
+  const fleetAvgProfitAtRisk = fleetPriority.length
+    ? fleetPriority.reduce((s, p) => s + p.profitAtRisk, 0) / fleetPriority.length
+    : 0;
+
+  const slotRows = layers
+    ? buildSlotAudit({devices: [device], orders, planogramsByDevice: {[device.id]: layers}, catalog})
+    : [];
+
+  const infoById = new Map();
+  catalog.forEach(p => {
+    if (p.id != null) infoById.set(String(p.id), {name: p.name, cost: p.cost || 0, price: p.price || 0});
+  });
+
+  const velocity = buildVelocityByDeviceProduct(orders);
+  const elsewhereTotals = new Map();
+  velocity.forEach((unitsPerDay, key) => {
+    const sep = key.lastIndexOf(':');
+    const deviceId = key.slice(0, sep);
+    const productId = key.slice(sep + 1);
+    if (deviceId === String(device.id)) return;
+    elsewhereTotals.set(productId, (elsewhereTotals.get(productId) || 0) + unitsPerDay);
+  });
+
+  const crossSellOpportunities = Array.from(elsewhereTotals.entries())
+    .filter(([productId]) => !stockedProductIds.has(productId) && !stockedProductIds.has(Number(productId)))
+    .map(([productId, unitsPerDayElsewhere]) => {
+      const info = infoById.get(productId);
+      const margin = reliableMargin(info);
+      return {
+        productId,
+        productName: info?.name || String(productId),
+        unitsPerDayElsewhere,
+        marginPct: margin != null && info.price > 0 ? margin / info.price : null,
+      };
+    })
+    .sort((a, b) => b.unitsPerDayElsewhere - a.unitsPerDayElsewhere)
+    .slice(0, 8);
+
+  return {thisMachine, fleetAvgProfitAtRisk, slotRows, crossSellOpportunities};
 };
