@@ -105,7 +105,7 @@ export const buildSlotAudit = ({devices = [], orders = [], planogramsByDevice = 
   const infoById = new Map();
   catalog.forEach(p => {
     if (p.id != null) {
-      infoById.set(p.id, {cost: p.cost || 0, price: p.price || 0, name: p.name});
+      infoById.set(p.id, {cost: p.cost || 0, price: p.price || 0, name: p.name, image: p.image});
     }
   });
 
@@ -128,6 +128,7 @@ export const buildSlotAudit = ({devices = [], orders = [], planogramsByDevice = 
         deviceName: device.name,
         productId: productKey,
         productName: info?.name || String(productKey),
+        image: info?.image,
         unitsPerDay,
         margin,
         marginPct: margin != null && info.price > 0 ? margin / info.price : null,
@@ -187,6 +188,7 @@ export const summarizeSlotAuditByProduct = (rows = []) => {
       e = {
         productId: r.productId,
         productName: r.productName,
+        image: r.image,
         machines: 0,
         currentSlotsTotal: 0,
         recommendedSlotsTotal: 0,

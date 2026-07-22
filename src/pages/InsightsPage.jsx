@@ -156,6 +156,7 @@ export const InsightsView = ({
           <table>
             <thead>
               <tr>
+                <th></th>
                 <th>Product</th>
                 <th className="right">Machines with zero sales</th>
                 <th className="right">Slots freed</th>
@@ -165,6 +166,9 @@ export const InsightsView = ({
             <tbody>
               {removals.map(p => (
                 <tr key={p.productId}>
+                  <td style={{width: 46}}>
+                    <Thumb src={p.image} alt={p.productName} />
+                  </td>
                   <td style={{fontWeight: 600}}>{p.productName}</td>
                   <td className="right nowrap">{p.removeCount} of {p.machines}</td>
                   <td className="right nowrap" style={{fontWeight: 600}}>{p.currentSlotsTotal}</td>
@@ -197,6 +201,7 @@ export const InsightsView = ({
           <table>
             <thead>
               <tr>
+                <th></th>
                 <th>Product</th>
                 <th className="right">Machines</th>
                 <th className="right">Current slots</th>
@@ -214,6 +219,9 @@ export const InsightsView = ({
             <tbody>
               {byProduct.map(p => (
                 <tr key={p.productId}>
+                  <td style={{width: 46}}>
+                    <Thumb src={p.image} alt={p.productName} />
+                  </td>
                   <td style={{fontWeight: 600}}>{p.productName}</td>
                   <td className="right nowrap">{p.machines}</td>
                   <td className="right nowrap">{p.currentSlotsTotal}</td>
@@ -265,11 +273,12 @@ export const InsightsView = ({
             <table>
               <thead>
                 <tr>
-                  <th colSpan={6} style={{background: 'var(--surface)', fontSize: 13}}>
+                  <th colSpan={7} style={{background: 'var(--surface)', fontSize: 13}}>
                     {machine.deviceName}
                   </th>
                 </tr>
                 <tr>
+                  <th></th>
                   <th>Product</th>
                   <th className="right">Current</th>
                   <th className="right">Recommended</th>
@@ -281,6 +290,9 @@ export const InsightsView = ({
               <tbody>
                 {machine.rows.map(r => (
                   <tr key={`${machine.deviceId}-${r.productId}`}>
+                    <td style={{width: 46}}>
+                      <Thumb src={r.image} alt={r.productName} />
+                    </td>
                     <td>{r.productName}</td>
                     <td className="right nowrap">{r.currentSlots}</td>
                     <td className="right nowrap" style={{fontWeight: 600}}>{r.recommendedSlots}</td>

@@ -1,13 +1,24 @@
 import React, {useEffect, useMemo, useState} from 'react';
 import {Link} from 'react-router-dom';
 import {useApp} from '../context/AppContext';
-import {SeverityBadge, EmptyState, Spinner, StatCard} from '../components/ui';
+import {SeverityBadge, EmptyState, Spinner, StatCard, Thumb} from '../components/ui';
 import {palette} from '../theme';
 import {trackAlertDurations, formatAlertDuration} from '../utils/alertHistory';
 
 const AlertsPage = () => {
-  const {alerts, lowStockSummary, isRefreshing} = useApp();
+  const {alerts, lowStockSummary, isRefreshing, products, inventoryProducts} = useApp();
   const [filter, setFilter] = useState('all');
+
+  // Alerts carry a productId but no image — look it up from the catalog
+  // (products has it; inventoryProducts fills in anything products is missing).
+  const imageById = useMemo(() => {
+    const map = new Map();
+    products.forEach(p => p.id != null && p.image && map.set(p.id, p.image));
+    inventoryProducts.forEach(p => {
+      if (p.id != null && p.image && !map.has(p.id)) map.set(p.id, p.image);
+    });
+    return map;
+  }, [products, inventoryProducts]);
   // Lazy-init from whatever alerts are already present (avoids an empty-state
   // flash), then re-stamp durations whenever the alert list changes. Stamping
   // touches localStorage, so the ongoing sync runs as an effect, not render.
@@ -74,6 +85,7 @@ const AlertsPage = () => {
           <table>
             <thead>
               <tr>
+                <th></th>
                 <th>Status</th>
                 <th>Product</th>
                 <th>Machine</th>
@@ -88,6 +100,9 @@ const AlertsPage = () => {
             <tbody>
               {rows.map(a => (
                 <tr key={a.id}>
+                  <td style={{width: 46}}>
+                    <Thumb src={imageById.get(a.productId)} alt={a.productName} />
+                  </td>
                   <td style={{width: 110}}>
                     <SeverityBadge severity={a.severity} />
                   </td>
