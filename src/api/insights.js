@@ -91,9 +91,16 @@ const countSlotsByProduct = layers => {
   return counts;
 };
 
-// Per-(device, product) audit of current vs. recommended slot count, scored by
-// "profit velocity" (units/day × margin per unit) so limited slots go to
-// whatever is both fast-moving and profitable, not just fast-moving.
+// Per-(device, product) audit of current vs. recommended slot count. Ranking
+// uses per-slot profit productivity (total profit/day ÷ how many slots it
+// currently occupies), not raw total profit, so a product spread across 2
+// slots is compared fairly against one cramming the same demand into 1.
+// Products with zero recorded sales in the window are flagged for outright
+// removal — no evidence they sell at all — rather than merely "keep at 1".
+// `profitDelta` estimates the daily profit change if the recommendation is
+// followed, assuming a product's own observed per-slot rate holds when its
+// slot count changes; that's a simplifying assumption (real shelf elasticity
+// may differ), not a guarantee — surfaced to the UI as an estimate.
 export const buildSlotAudit = ({devices = [], orders = [], planogramsByDevice = {}, catalog = []}) => {
   const infoById = new Map();
   catalog.forEach(p => {
@@ -115,7 +122,7 @@ export const buildSlotAudit = ({devices = [], orders = [], planogramsByDevice = 
       const info = infoById.get(productKey);
       const margin = reliableMargin(info);
       const unitsPerDay = velocity.get(`${device.id}:${productKey}`) || 0;
-      const score = margin != null ? unitsPerDay * margin : unitsPerDay;
+      const score = margin != null ? unitsPerDay * margin : unitsPerDay; // current profit/day estimate
       return {
         deviceId: device.id,
         deviceName: device.name,
@@ -126,30 +133,39 @@ export const buildSlotAudit = ({devices = [], orders = [], planogramsByDevice = 
         marginPct: margin != null && info.price > 0 ? margin / info.price : null,
         currentSlots,
         score,
+        profitPerSlot: score / currentSlots,
       };
     });
 
-    // Rank by score to decide who "deserves" a second slot per machine. With
-    // few distinct products, a raw percentile is noisy, so require a product
-    // to clear both the top-third cutoff AND the machine's own average score.
-    const sorted = [...entries].sort((a, b) => b.score - a.score);
-    const avgScore = entries.reduce((s, e) => s + e.score, 0) / (entries.length || 1);
+    // Rank sellers only — a dead product's score of 0 would just drag the
+    // cutoff down and isn't a meaningful comparison point for "who deserves a
+    // 2nd slot" anyway.
+    const sellers = entries.filter(e => e.unitsPerDay > 0);
+    const sorted = [...sellers].sort((a, b) => b.profitPerSlot - a.profitPerSlot);
+    const avgProfitPerSlot = sorted.reduce((s, e) => s + e.profitPerSlot, 0) / (sorted.length || 1);
     const cutoffIndex = Math.max(0, Math.ceil(sorted.length / 3) - 1);
-    const rankCutoff = sorted[cutoffIndex]?.score ?? 0;
+    const rankCutoff = sorted[cutoffIndex]?.profitPerSlot ?? 0;
 
     entries.forEach(e => {
-      const qualifies = e.unitsPerDay > 0 && e.score >= rankCutoff && e.score > avgScore;
-      const recommendedSlots = qualifies ? 2 : 1;
+      let recommendedSlots;
+      let direction;
+      if (e.unitsPerDay === 0) {
+        recommendedSlots = 0;
+        direction = 'remove';
+      } else {
+        const qualifies = e.profitPerSlot >= rankCutoff && e.profitPerSlot > avgProfitPerSlot;
+        recommendedSlots = qualifies ? 2 : 1;
+        direction =
+          recommendedSlots > e.currentSlots ? 'increase' : recommendedSlots < e.currentSlots ? 'decrease' : 'ok';
+      }
+      const projectedProfitRate = e.profitPerSlot * recommendedSlots;
       rows.push({
         ...e,
         recommendedSlots,
+        direction,
         mismatch: recommendedSlots !== e.currentSlots,
-        direction:
-          recommendedSlots > e.currentSlots
-            ? 'increase'
-            : recommendedSlots < e.currentSlots
-              ? 'decrease'
-              : 'ok',
+        projectedProfitRate,
+        profitDelta: projectedProfitRate - e.score,
       });
     });
   });
@@ -158,8 +174,10 @@ export const buildSlotAudit = ({devices = [], orders = [], planogramsByDevice = 
 };
 
 // Rolls per-machine rows up to one recommendation per product across every
-// machine it appears in — answers "which drinks should get 2 slots" at a
-// catalog level rather than machine-by-machine.
+// machine it appears in — answers "which drinks should get 2 slots (or get
+// removed)" at a catalog level rather than machine-by-machine. `profitDeltaSum`
+// is the estimated total daily profit change across every machine if this
+// product's recommendation is followed everywhere it's stocked.
 export const summarizeSlotAuditByProduct = (rows = []) => {
   const byProduct = new Map();
 
@@ -174,9 +192,11 @@ export const summarizeSlotAuditByProduct = (rows = []) => {
         recommendedSlotsTotal: 0,
         increaseCount: 0,
         decreaseCount: 0,
+        removeCount: 0,
         unitsPerDaySum: 0,
         marginPctSum: 0,
         marginSamples: 0,
+        profitDeltaSum: 0,
       };
       byProduct.set(r.productId, e);
     }
@@ -185,7 +205,9 @@ export const summarizeSlotAuditByProduct = (rows = []) => {
     e.recommendedSlotsTotal += r.recommendedSlots;
     if (r.direction === 'increase') e.increaseCount += 1;
     if (r.direction === 'decrease') e.decreaseCount += 1;
+    if (r.direction === 'remove') e.removeCount += 1;
     e.unitsPerDaySum += r.unitsPerDay;
+    e.profitDeltaSum += r.profitDelta;
     if (r.marginPct != null) {
       e.marginPctSum += r.marginPct;
       e.marginSamples += 1;
@@ -198,8 +220,11 @@ export const summarizeSlotAuditByProduct = (rows = []) => {
       avgUnitsPerDay: e.unitsPerDaySum / e.machines,
       avgMarginPct: e.marginSamples ? e.marginPctSum / e.marginSamples : null,
       opportunity: e.recommendedSlotsTotal - e.currentSlotsTotal,
+      // Unanimous across every machine that stocks it → a clean "remove
+      // everywhere" call; otherwise it's a mixed bag, not a blanket removal.
+      removeEverywhere: e.removeCount === e.machines,
     }))
-    .sort((a, b) => b.opportunity - a.opportunity);
+    .sort((a, b) => b.profitDeltaSum - a.profitDeltaSum);
 };
 
 // Groups the raw per-(device, product) rows by machine for the "how are

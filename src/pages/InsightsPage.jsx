@@ -9,8 +9,13 @@ const pct = v => (v == null ? '—' : `${(v * 100).toFixed(1)}%`);
 const DirectionBadge = ({direction}) => {
   if (direction === 'increase') return <span className="badge warning">↑ Add a slot</span>;
   if (direction === 'decrease') return <span className="badge neutral">↓ Drop a slot</span>;
+  if (direction === 'remove') return <span className="badge critical">🗑 Remove</span>;
   return <span className="badge online">OK</span>;
 };
+
+// Signed currency, e.g. "+£1.20/day" / "-£0.40/day" — used for estimated
+// profit impact, where the sign is the whole point.
+const signedPerDay = (cur, v) => `${v >= 0 ? '+' : '-'}${cur}${Math.abs(v).toFixed(2)}/day`;
 
 const MarginMiniTable = ({title, rows, cur, tint}) => (
   <div className="card card-pad" style={{flex: 1, minWidth: 260}}>
@@ -48,7 +53,10 @@ export const InsightsView = ({
   margin,
   byProduct,
   byMachine,
+  removals,
+  totalProfitDelta,
   planogramsLoading,
+  salesPending,
   machinesTotal,
   aiLoading,
   aiText,
@@ -56,6 +64,10 @@ export const InsightsView = ({
   onAskAi,
 }) => {
   const opportunities = byProduct.filter(p => p.opportunity !== 0);
+  // Velocity is 0 for everything until sales history has loaded at least
+  // once, which would otherwise read as "every product should be removed" —
+  // show a loading state instead of that misleading snapshot.
+  const slotDataPending = salesPending || (planogramsLoading && byProduct.length === 0);
 
   return (
     <>
@@ -79,13 +91,23 @@ export const InsightsView = ({
         </div>
         <div className="card card-pad stat-card">
           <div className="stat-label">Slot changes recommended</div>
-          <div className="stat-value">{opportunities.length}</div>
-          <div className="stat-foot">products under- or over-slotted</div>
+          <div className="stat-value">{slotDataPending ? '…' : opportunities.length}</div>
+          <div className="stat-foot">
+            {slotDataPending ? 'waiting on sales history…' : `${removals.length} recommended for removal`}
+          </div>
         </div>
-        <div className="card card-pad stat-card">
-          <div className="stat-label">Machines analyzed</div>
-          <div className="stat-value">{byMachine.length}</div>
-          <div className="stat-foot">of {machinesTotal} total{planogramsLoading ? ' · loading…' : ''}</div>
+        <div
+          className="card card-pad stat-card"
+          title="Estimated if every recommendation below is followed — assumes each product's own observed per-slot rate holds when its slot count changes. A directional estimate, not a guarantee.">
+          <div className="stat-label">Est. profit improvement</div>
+          {slotDataPending ? (
+            <div className="stat-value muted">…</div>
+          ) : (
+            <div className="stat-value" style={{color: totalProfitDelta >= 0 ? 'var(--success)' : 'var(--danger)'}}>
+              {signedPerDay(cur, totalProfitDelta)}
+            </div>
+          )}
+          <div className="stat-foot">if all recommendations are followed</div>
         </div>
       </div>
 
@@ -120,8 +142,49 @@ export const InsightsView = ({
         <MarginMiniTable title="Lowest margin" rows={margin.bottom} cur={cur} tint="var(--danger)" />
       </div>
 
+      <div className="section-title">🗑 Recommended removals</div>
+      {slotDataPending ? (
+        <div className="card card-pad">
+          <Spinner />
+        </div>
+      ) : removals.length === 0 ? (
+        <div className="card card-pad muted" style={{fontSize: 13, marginBottom: 8}}>
+          Nothing to remove — every stocked product has sold at least once in the observed window.
+        </div>
+      ) : (
+        <div className="table-wrap" style={{marginBottom: 8}}>
+          <table>
+            <thead>
+              <tr>
+                <th>Product</th>
+                <th className="right">Machines with zero sales</th>
+                <th className="right">Slots freed</th>
+                <th>Why</th>
+              </tr>
+            </thead>
+            <tbody>
+              {removals.map(p => (
+                <tr key={p.productId}>
+                  <td style={{fontWeight: 600}}>{p.productName}</td>
+                  <td className="right nowrap">{p.removeCount} of {p.machines}</td>
+                  <td className="right nowrap" style={{fontWeight: 600}}>{p.currentSlotsTotal}</td>
+                  <td className="muted">No recorded sales in the observed window</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {!slotDataPending && removals.length > 0 && (
+        <div className="card card-pad muted" style={{fontSize: 13, marginBottom: 8}}>
+          Removing these frees {removals.reduce((s, p) => s + p.currentSlotsTotal, 0)} slot
+          {removals.reduce((s, p) => s + p.currentSlotsTotal, 0) === 1 ? '' : 's'} — put that space toward the
+          "Add a slot" rows below for the best return.
+        </div>
+      )}
+
       <div className="section-title">🔀 Slot allocation — 1 row vs. 2 rows</div>
-      {planogramsLoading && byProduct.length === 0 ? (
+      {slotDataPending ? (
         <div className="card card-pad">
           <Spinner />
         </div>
@@ -140,6 +203,11 @@ export const InsightsView = ({
                 <th className="right">Recommended</th>
                 <th className="right" title="Average units sold per day, across machines that stock it">Avg. velocity</th>
                 <th className="right" title="Average profit margin, where cost data is available">Avg. margin</th>
+                <th
+                  className="right"
+                  title="Estimated daily profit change across every machine if this recommendation is followed. Assumes each product's own per-slot rate holds when its slot count changes — a directional estimate.">
+                  Est. impact
+                </th>
                 <th></th>
               </tr>
             </thead>
@@ -152,9 +220,22 @@ export const InsightsView = ({
                   <td className="right nowrap" style={{fontWeight: 600}}>{p.recommendedSlotsTotal}</td>
                   <td className="right nowrap">{p.avgUnitsPerDay.toFixed(2)}/day</td>
                   <td className="right nowrap">{pct(p.avgMarginPct)}</td>
+                  <td
+                    className="right nowrap"
+                    style={{fontWeight: 600, color: p.profitDeltaSum >= 0 ? 'var(--success)' : 'var(--danger)'}}>
+                    {signedPerDay(cur, p.profitDeltaSum)}
+                  </td>
                   <td>
                     <DirectionBadge
-                      direction={p.opportunity > 0 ? 'increase' : p.opportunity < 0 ? 'decrease' : 'ok'}
+                      direction={
+                        p.removeEverywhere
+                          ? 'remove'
+                          : p.opportunity > 0
+                            ? 'increase'
+                            : p.opportunity < 0
+                              ? 'decrease'
+                              : 'ok'
+                      }
                     />
                   </td>
                 </tr>
@@ -170,7 +251,11 @@ export const InsightsView = ({
           current vs. recommended slots, per machine
         </span>
       </div>
-      {byMachine.length === 0 ? (
+      {slotDataPending ? (
+        <div className="card card-pad">
+          <Spinner />
+        </div>
+      ) : byMachine.length === 0 ? (
         <div className="card card-pad">
           <EmptyState emoji="🏪" title="No machines analyzed yet" />
         </div>
@@ -180,7 +265,7 @@ export const InsightsView = ({
             <table>
               <thead>
                 <tr>
-                  <th colSpan={5} style={{background: 'var(--surface)', fontSize: 13}}>
+                  <th colSpan={6} style={{background: 'var(--surface)', fontSize: 13}}>
                     {machine.deviceName}
                   </th>
                 </tr>
@@ -189,6 +274,7 @@ export const InsightsView = ({
                   <th className="right">Current</th>
                   <th className="right">Recommended</th>
                   <th className="right">Velocity</th>
+                  <th className="right">Est. impact</th>
                   <th></th>
                 </tr>
               </thead>
@@ -199,6 +285,11 @@ export const InsightsView = ({
                     <td className="right nowrap">{r.currentSlots}</td>
                     <td className="right nowrap" style={{fontWeight: 600}}>{r.recommendedSlots}</td>
                     <td className="right nowrap">{r.unitsPerDay.toFixed(2)}/day</td>
+                    <td
+                      className="right nowrap"
+                      style={{color: r.profitDelta >= 0 ? 'var(--success)' : 'var(--danger)'}}>
+                      {signedPerDay(cur, r.profitDelta)}
+                    </td>
                     <td>
                       <DirectionBadge direction={r.direction} />
                     </td>
@@ -214,8 +305,13 @@ export const InsightsView = ({
 };
 
 const InsightsPage = () => {
-  const {devices, products, inventoryProducts, orders, planogramCache, loadPlanogram, currencyCode} = useApp();
+  const {devices, products, inventoryProducts, orders, planogramCache, loadPlanogram, currencyCode, salesLoading} =
+    useApp();
   const cur = getCurrencySymbol(currencyCode);
+  // Velocity is derived from `orders`, which loads in a second phase after
+  // core data — until it's arrived at least once, every product reads as zero
+  // sales, which the slot audit would otherwise mistake for "remove this".
+  const salesPending = salesLoading && orders.length === 0;
   const [planogramsLoading, setPlanogramsLoading] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiText, setAiText] = useState(null);
@@ -254,6 +350,11 @@ const InsightsPage = () => {
   );
   const byProduct = useMemo(() => summarizeSlotAuditByProduct(slotRows), [slotRows]);
   const byMachine = useMemo(() => groupSlotAuditByMachine(slotRows), [slotRows]);
+  const removals = useMemo(
+    () => byProduct.filter(p => p.removeEverywhere).sort((a, b) => b.currentSlotsTotal - a.currentSlotsTotal),
+    [byProduct],
+  );
+  const totalProfitDelta = useMemo(() => slotRows.reduce((s, r) => s + r.profitDelta, 0), [slotRows]);
 
   const onAskAi = async () => {
     setAiLoading(true);
@@ -263,8 +364,14 @@ const InsightsPage = () => {
       const summary = {
         marginTop: margin.top.map(m => ({name: m.name, price: m.price, cost: m.cost, marginPct: Math.round(m.marginPct * 1000) / 10})),
         marginBottom: margin.bottom.map(m => ({name: m.name, price: m.price, cost: m.cost, marginPct: Math.round(m.marginPct * 1000) / 10})),
+        recommendedRemovals: removals.slice(0, 10).map(p => ({
+          name: p.productName,
+          machinesWithZeroSales: p.removeCount,
+          totalMachinesStockingIt: p.machines,
+          slotsFreed: p.currentSlotsTotal,
+        })),
         slotIncreaseOpportunities: byProduct
-          .filter(p => p.opportunity > 0)
+          .filter(p => p.opportunity > 0 && !p.removeEverywhere)
           .slice(0, 8)
           .map(p => ({
             name: p.productName,
@@ -273,9 +380,10 @@ const InsightsPage = () => {
             recommendedSlots: p.recommendedSlotsTotal,
             avgUnitsPerDay: Math.round(p.avgUnitsPerDay * 100) / 100,
             avgMarginPct: p.avgMarginPct != null ? Math.round(p.avgMarginPct * 1000) / 10 : null,
+            estimatedDailyProfitImpact: Math.round(p.profitDeltaSum * 100) / 100,
           })),
         slotDecreaseOpportunities: byProduct
-          .filter(p => p.opportunity < 0)
+          .filter(p => p.opportunity < 0 && !p.removeEverywhere)
           .slice(0, 8)
           .map(p => ({
             name: p.productName,
@@ -283,7 +391,9 @@ const InsightsPage = () => {
             currentSlots: p.currentSlotsTotal,
             recommendedSlots: p.recommendedSlotsTotal,
             avgUnitsPerDay: Math.round(p.avgUnitsPerDay * 100) / 100,
+            estimatedDailyProfitImpact: Math.round(p.profitDeltaSum * 100) / 100,
           })),
+        estimatedTotalDailyProfitImprovement: Math.round(totalProfitDelta * 100) / 100,
         machinesAnalyzed: byMachine.length,
         currencySymbol: cur,
       };
@@ -291,7 +401,16 @@ const InsightsPage = () => {
       const res = await fetch('/api/insights', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({summary}),
+        body: JSON.stringify({
+          summary,
+          task: `Cover, in this order: (1) which products should be removed entirely (zero
+sales) and roughly how many slots that frees, (2) which products should move from
+1 slot to 2 slots and why, citing the estimated daily profit impact, (3) which
+should move from 2 slots down to 1, (4) the highest and lowest profit-margin
+items and what that implies, (5) the total estimated daily profit improvement if
+all of this is followed, with a one-line caveat that it's an estimate assuming
+each product's per-slot rate holds when slot counts change.`,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || `Request failed (${res.status})`);
@@ -309,7 +428,10 @@ const InsightsPage = () => {
       margin={margin}
       byProduct={byProduct}
       byMachine={byMachine}
+      removals={removals}
+      totalProfitDelta={totalProfitDelta}
       planogramsLoading={planogramsLoading}
+      salesPending={salesPending}
       machinesTotal={devices.length}
       aiLoading={aiLoading}
       aiText={aiText}
