@@ -4,12 +4,22 @@ import {useApp} from '../context/AppContext';
 import {Spinner, EmptyState} from '../components/ui';
 import {MachinesMap} from '../components/MachinesMap';
 import {getCurrencySymbol} from '../api';
-import {buildVisitSchedule} from '../api/schedule';
+import {buildVisitSchedule, buildRestockList} from '../api/schedule';
 import {extractPlaceQuery, geocodePlaces, geocodeKey, splitGeographicOutliers} from '../api/geocode';
 import {trackAlertDurations, formatAlertDuration} from '../utils/alertHistory';
 
-const TierView = ({tier, cur, navigate, aiLoading, aiText, aiError, onAskAi, emptyHint}) => {
+const PRIORITY_LIMIT = 20;
+
+const SeverityDot = ({severity}) => (
+  <span
+    className="dot"
+    style={{background: severity === 'critical' ? 'var(--danger)' : 'var(--warning)', marginRight: 6}}
+  />
+);
+
+const TierView = ({tier, tierLabel, cur, navigate, aiLoading, aiText, aiError, onAskAi, emptyHint}) => {
   const stops = [...tier.ordered, ...tier.unroutable];
+  const restockList = useMemo(() => buildRestockList(tier), [tier]);
 
   if (stops.length === 0) {
     return (
@@ -44,6 +54,86 @@ const TierView = ({tier, cur, navigate, aiLoading, aiText, aiError, onAskAi, emp
           <div className="stat-value">{tier.totalKm.toFixed(1)} km</div>
           <div className="stat-foot">straight-line, not driving distance</div>
         </div>
+      </div>
+
+      <div className="section-title">🧳 What to restock — packing list</div>
+      <div className="table-wrap" style={{marginBottom: 16}}>
+        <table>
+          <thead>
+            <tr>
+              <th>Product</th>
+              <th className="right">Qty to bring</th>
+              <th className="right">Machines</th>
+              <th className="right" title="Total estimated daily profit recovered by restocking this product across every stop in this list">
+                Profit at risk
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {restockList.packingList.map(p => (
+              <tr key={p.productName}>
+                <td style={{fontWeight: 600}}>{p.productName}</td>
+                <td className="right nowrap" style={{fontWeight: 700}}>{p.qty}</td>
+                <td className="right nowrap">{p.deviceCount}</td>
+                <td className="right nowrap" style={{fontWeight: 600}}>
+                  {cur}
+                  {p.profitAtRisk.toFixed(2)}/day
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="section-title">
+        🎯 Restock priority order
+        <span className="muted" style={{marginLeft: 'auto', fontSize: 12, fontWeight: 400}}>
+          highest profit impact first
+        </span>
+      </div>
+      <div className="table-wrap" style={{marginBottom: 8}}>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Product</th>
+              <th>Machine</th>
+              <th className="right">Qty</th>
+              <th></th>
+              <th className="right">Profit at risk</th>
+            </tr>
+          </thead>
+          <tbody>
+            {restockList.priorityActions.slice(0, PRIORITY_LIMIT).map((a, i) => (
+              <tr
+                key={`${a.deviceId}-${a.productName}`}
+                className="clickable"
+                onClick={() => navigate(`/machines/${encodeURIComponent(a.deviceId)}`)}>
+                <td className="muted">{i + 1}</td>
+                <td style={{fontWeight: 600}}>{a.productName}</td>
+                <td>
+                  {a.stopNumber ? `Stop ${a.stopNumber} · ` : ''}
+                  {a.deviceName}
+                </td>
+                <td className="right nowrap">{a.qtyToBring}</td>
+                <td className="nowrap">
+                  <SeverityDot severity={a.severity} />
+                  {a.severity === 'critical' ? 'Out of stock' : 'Low'}
+                </td>
+                <td className="right nowrap" style={{fontWeight: 600}}>
+                  {cur}
+                  {a.dailyProfitAtRisk.toFixed(2)}/day
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="muted" style={{fontSize: 12, marginBottom: 16}}>
+        {restockList.priorityActions.length > PRIORITY_LIMIT
+          ? `Showing the top ${PRIORITY_LIMIT} of ${restockList.priorityActions.length} restock actions, ranked by daily profit impact — the rest have little to no measurable margin data and are covered in the per-machine breakdown below.`
+          : "Quantity assumes topping each slot back up to its own capacity."}{' '}
+        If you can't get through everything in {tierLabel}, work down this list from the top.
       </div>
 
       <div className="section-title">
@@ -318,6 +408,7 @@ the person doing this run today. Keep it under 300 words.`,
       ) : (
         <TierView
           tier={activeTier}
+          tierLabel={tab === 'today' ? 'today' : 'this week'}
           cur={cur}
           navigate={navigate}
           aiLoading={!!activeAi?.loading}
