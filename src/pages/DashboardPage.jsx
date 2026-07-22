@@ -2,13 +2,17 @@ import React, {useMemo} from 'react';
 import {Link} from 'react-router-dom';
 import {useApp} from '../context/AppContext';
 import {StatCard, SeverityBadge, Spinner, EmptyState} from '../components/ui';
+import {LineChart} from '../components/LineChart';
 import {getCurrencySymbol} from '../api';
+import {buildProfitOverTime} from '../api/insights';
 import {palette} from '../theme';
 
 const DashboardPage = () => {
   const {
     devices,
+    products,
     inventoryProducts,
+    orders,
     lowStockSummary,
     todayRevenue,
     financialSummary,
@@ -19,6 +23,22 @@ const DashboardPage = () => {
   } = useApp();
 
   const cur = getCurrencySymbol(currencyCode);
+
+  // Catalog merged for price/cost lookups (products has both; inventoryProducts
+  // fills in anything products is missing) — same pattern used on Insights/Machines.
+  const catalog = useMemo(() => {
+    const byId = new Map();
+    products.forEach(p => p.id != null && byId.set(p.id, p));
+    inventoryProducts.forEach(p => {
+      if (p.id != null && !byId.has(p.id)) byId.set(p.id, p);
+    });
+    return Array.from(byId.values());
+  }, [products, inventoryProducts]);
+
+  const profitOverTime = useMemo(
+    () => buildProfitOverTime({orders, devices, catalog}),
+    [orders, devices, catalog],
+  );
 
   const stats = useMemo(() => {
     const online = devices.filter(d => d.status === 'online').length;
@@ -83,6 +103,39 @@ const DashboardPage = () => {
           foot={`${cur}${(financialSummary.salesTotal || 0).toFixed(2)} last 30 days`}
         />
       </div>
+
+      <div className="section-title">
+        📈 Profit over time
+        <span className="muted" style={{marginLeft: 'auto', fontSize: 12, fontWeight: 400}}>
+          last 30 days · {cur}
+          {profitOverTime.totalProfit.toFixed(2)} total
+        </span>
+      </div>
+      {profitOverTime.series.length === 0 ? (
+        <div className="card card-pad">
+          <EmptyState emoji="📈" title="No profit data yet" hint="Waiting on sales history to load." />
+        </div>
+      ) : (
+        <div className="card card-pad" style={{marginBottom: 8}}>
+          <LineChart
+            series={profitOverTime.series}
+            labels={profitOverTime.labels}
+            formatValue={v => `${cur}${v.toFixed(0)}`}
+          />
+          <div style={{display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border-subtle)'}}>
+            {profitOverTime.series.map(s => (
+              <div key={s.deviceId} style={{display: 'flex', alignItems: 'center', gap: 6, fontSize: 12}}>
+                <span style={{width: 8, height: 8, borderRadius: '50%', background: s.color, display: 'inline-block'}} />
+                <span className="muted">{s.deviceName}</span>
+                <strong>
+                  {cur}
+                  {s.total.toFixed(2)}
+                </strong>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid" style={{gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', marginTop: 8}}>
         <div>

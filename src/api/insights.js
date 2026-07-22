@@ -3,6 +3,8 @@
 // computes them, so the figures stay reproducible and don't depend on model
 // output.
 
+import {toLocalDateString} from './analytics';
+
 const isCountedSale = o => {
   const s = String(o.status || '').toLowerCase();
   return s !== 'unpaid' && s !== 'refunded' && !o.refund;
@@ -272,4 +274,79 @@ export const buildRestockPriority = ({devices = [], alerts = [], orders = [], ca
     .filter(e => e.criticalCount > 0 || e.warningCount > 0)
     .map(e => ({...e, items: e.items.sort((a, b) => b.dailyProfitAtRisk - a.dailyProfitAtRisk)}))
     .sort((a, b) => b.profitAtRisk - a.profitAtRisk);
+};
+
+const MACHINE_COLORS = ['#3D2EAA', '#10B981', '#F59E0B', '#EF4444', '#06B6D4', '#8B5CF6', '#64748B'];
+
+// Daily profit (revenue − COGS, using only reliable margins) per machine over
+// the trailing `days`, for the dashboard's profit-over-time chart. Machines
+// are ranked by total profit in the window; only the top `topN` get their own
+// line, the rest are folded into one "Other machines" line so a large estate
+// doesn't turn into an unreadable tangle of colors.
+export const buildProfitOverTime = ({orders = [], devices = [], catalog = [], days = 30, topN = 6}) => {
+  const infoById = new Map();
+  catalog.forEach(p => {
+    if (p.id != null) infoById.set(p.id, {cost: p.cost || 0, price: p.price || 0});
+  });
+  const deviceNameById = new Map(devices.map(d => [d.id, d.name]));
+
+  const dayKeys = [];
+  const today = new Date();
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    dayKeys.push(toLocalDateString(d));
+  }
+  const dayIndex = new Map(dayKeys.map((k, i) => [k, i]));
+
+  const profitByDevice = new Map();
+  const totalByDevice = new Map();
+
+  orders.forEach(o => {
+    if (!isCountedSale(o)) return;
+    const idx = dayIndex.get((o.date || '').slice(0, 10));
+    if (idx == null) return;
+
+    let profit = 0;
+    (o.items || []).forEach(it => {
+      const margin = reliableMargin(infoById.get(it.productId));
+      if (margin == null) return;
+      profit += margin * (Number(it.quantity) || 1);
+    });
+
+    if (!profitByDevice.has(o.deviceId)) profitByDevice.set(o.deviceId, new Array(days).fill(0));
+    profitByDevice.get(o.deviceId)[idx] += profit;
+    totalByDevice.set(o.deviceId, (totalByDevice.get(o.deviceId) || 0) + profit);
+  });
+
+  const ranked = Array.from(totalByDevice.entries()).sort((a, b) => b[1] - a[1]);
+  const topIds = ranked.slice(0, topN).map(([id]) => id);
+  const otherIds = ranked.slice(topN).map(([id]) => id);
+
+  const series = topIds.map((id, i) => ({
+    deviceId: id,
+    deviceName: deviceNameById.get(id) || id,
+    color: MACHINE_COLORS[i % MACHINE_COLORS.length],
+    points: profitByDevice.get(id),
+    total: totalByDevice.get(id),
+  }));
+
+  if (otherIds.length > 0) {
+    const combined = new Array(days).fill(0);
+    otherIds.forEach(id => profitByDevice.get(id).forEach((v, i) => (combined[i] += v)));
+    series.push({
+      deviceId: '__other__',
+      deviceName: `Other machines (${otherIds.length})`,
+      color: MACHINE_COLORS[topN % MACHINE_COLORS.length],
+      points: combined,
+      total: otherIds.reduce((s, id) => s + (totalByDevice.get(id) || 0), 0),
+    });
+  }
+
+  const labels = dayKeys.map(k => {
+    const [, m, d] = k.split('-');
+    return `${Number(m)}/${Number(d)}`;
+  });
+
+  return {labels, series, totalProfit: Array.from(totalByDevice.values()).reduce((s, v) => s + v, 0)};
 };
