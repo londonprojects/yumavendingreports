@@ -253,7 +253,7 @@ export const groupSlotAuditByMachine = (rows = []) => {
 export const buildRestockPriority = ({devices = [], alerts = [], orders = [], catalog = []}) => {
   const infoById = new Map();
   catalog.forEach(p => {
-    if (p.id != null) infoById.set(p.id, {cost: p.cost || 0, price: p.price || 0, name: p.name});
+    if (p.id != null) infoById.set(p.id, {cost: p.cost || 0, price: p.price || 0, name: p.name, image: p.image});
   });
   const velocity = buildVelocityByDeviceProduct(orders);
 
@@ -283,6 +283,7 @@ export const buildRestockPriority = ({devices = [], alerts = [], orders = [], ca
     entry.items.push({
       productId: a.productId,
       productName: a.productName,
+      image: info?.image,
       stock: a.stock,
       capacity: a.capacity,
       severity: a.severity,

@@ -1,7 +1,7 @@
 import React, {useEffect, useMemo, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
 import {useApp} from '../context/AppContext';
-import {Spinner, EmptyState} from '../components/ui';
+import {Spinner, EmptyState, Thumb} from '../components/ui';
 import {MachinesMap} from '../components/MachinesMap';
 import {getCurrencySymbol} from '../api';
 import {buildVisitSchedule, buildRestockList} from '../api/schedule';
@@ -61,6 +61,7 @@ const TierView = ({tier, tierLabel, cur, navigate, aiLoading, aiText, aiError, o
         <table>
           <thead>
             <tr>
+              <th></th>
               <th>Product</th>
               <th className="right">Qty to bring</th>
               <th className="right">Machines</th>
@@ -72,6 +73,9 @@ const TierView = ({tier, tierLabel, cur, navigate, aiLoading, aiText, aiError, o
           <tbody>
             {restockList.packingList.map(p => (
               <tr key={p.productName}>
+                <td style={{width: 46}}>
+                  <Thumb src={p.image} alt={p.productName} />
+                </td>
                 <td style={{fontWeight: 600}}>{p.productName}</td>
                 <td className="right nowrap" style={{fontWeight: 700}}>{p.qty}</td>
                 <td className="right nowrap">{p.deviceCount}</td>
@@ -96,6 +100,7 @@ const TierView = ({tier, tierLabel, cur, navigate, aiLoading, aiText, aiError, o
           <thead>
             <tr>
               <th>#</th>
+              <th></th>
               <th>Product</th>
               <th>Machine</th>
               <th className="right">Qty</th>
@@ -110,6 +115,9 @@ const TierView = ({tier, tierLabel, cur, navigate, aiLoading, aiText, aiError, o
                 className="clickable"
                 onClick={() => navigate(`/machines/${encodeURIComponent(a.deviceId)}`)}>
                 <td className="muted">{i + 1}</td>
+                <td style={{width: 46}}>
+                  <Thumb src={a.image} alt={a.productName} />
+                </td>
                 <td style={{fontWeight: 600}}>{a.productName}</td>
                 <td>
                   {a.stopNumber ? `Stop ${a.stopNumber} · ` : ''}

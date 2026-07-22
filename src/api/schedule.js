@@ -59,6 +59,7 @@ export const buildRestockList = tier => {
         deviceName: stop.deviceName,
         stopNumber,
         productName: it.productName,
+        image: it.image,
         severity: it.severity,
         qtyToBring,
         dailyProfitAtRisk: it.dailyProfitAtRisk,
@@ -66,7 +67,7 @@ export const buildRestockList = tier => {
 
       let e = byProduct.get(it.productName);
       if (!e) {
-        e = {productName: it.productName, qty: 0, profitAtRisk: 0, deviceCount: 0};
+        e = {productName: it.productName, image: it.image, qty: 0, profitAtRisk: 0, deviceCount: 0};
         byProduct.set(it.productName, e);
       }
       e.qty += qtyToBring;
