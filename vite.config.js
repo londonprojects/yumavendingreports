@@ -8,6 +8,12 @@ import react from '@vitejs/plugin-react';
 const HAHA_TEST = 'https://thor-openapi-test.hahavending.com';
 const HAHA_PROD = 'https://thor-openapi.hahavending.com';
 
+// In production the /api/* AI-insights endpoint is handled by the same Worker
+// that serves this static build (see wrangler.jsonc). In dev, Vite proxies it
+// to a local `wrangler dev` instance (see README) so the Kimi API key never
+// has to live in this app's own JS.
+const WORKER_DEV = 'http://127.0.0.1:8787';
+
 export default defineConfig({
   plugins: [react()],
   server: {
@@ -24,6 +30,10 @@ export default defineConfig({
         changeOrigin: true,
         secure: true,
         rewrite: path => path.replace(/^\/haha-prod/, ''),
+      },
+      '/api': {
+        target: WORKER_DEV,
+        changeOrigin: true,
       },
     },
   },

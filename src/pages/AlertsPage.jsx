@@ -1,22 +1,39 @@
-import React, {useMemo, useState} from 'react';
+import React, {useEffect, useMemo, useState} from 'react';
 import {Link} from 'react-router-dom';
 import {useApp} from '../context/AppContext';
 import {SeverityBadge, EmptyState, Spinner, StatCard} from '../components/ui';
 import {palette} from '../theme';
+import {trackAlertDurations, formatAlertDuration} from '../utils/alertHistory';
 
 const AlertsPage = () => {
   const {alerts, lowStockSummary, isRefreshing} = useApp();
   const [filter, setFilter] = useState('all');
+  // Lazy-init from whatever alerts are already present (avoids an empty-state
+  // flash), then re-stamp durations whenever the alert list changes. Stamping
+  // touches localStorage, so the ongoing sync runs as an effect, not render.
+  // Critically, this must not run while core data is still loading: `alerts`
+  // starts as `[]` before the first load resolves, and treating that as a
+  // real "everything resolved" snapshot would prune every tracked alert's
+  // history on every fresh page load.
+  const [tracked, setTracked] = useState(() => (isRefreshing ? [] : trackAlertDurations(alerts)));
+  useEffect(() => {
+    if (isRefreshing) return;
+    setTracked(trackAlertDurations(alerts));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [alerts, isRefreshing]);
 
   const rows = useMemo(() => {
-    return alerts
+    return tracked
       .filter(a => {
         if (filter === 'critical') return a.severity === 'critical';
         if (filter === 'warning') return a.severity === 'warning';
         return true;
       })
-      .sort((a, b) => (a.severity === 'critical' ? -1 : 1) - (b.severity === 'critical' ? -1 : 1));
-  }, [alerts, filter]);
+      .sort((a, b) => {
+        const sevDiff = (a.severity === 'critical' ? -1 : 1) - (b.severity === 'critical' ? -1 : 1);
+        return sevDiff !== 0 ? sevDiff : b.days - a.days;
+      });
+  }, [tracked, filter]);
 
   if (isRefreshing && alerts.length === 0) return <Spinner />;
 
@@ -61,6 +78,10 @@ const AlertsPage = () => {
                 <th>Product</th>
                 <th>Machine</th>
                 <th className="right">Stock</th>
+                <th
+                  title="How long this has continuously been at its current severity. The API doesn't report stockout history, so this counts from whenever this app first saw it — it may understate the real duration.">
+                  Duration
+                </th>
                 <th>Issue</th>
               </tr>
             </thead>
@@ -81,6 +102,10 @@ const AlertsPage = () => {
                   <td className="right nowrap">
                     {a.stock}
                     {a.capacity ? <span className="muted"> / {a.capacity}</span> : null}
+                  </td>
+                  <td className="nowrap" style={a.days >= 3 ? {color: 'var(--danger)', fontWeight: 600} : undefined}>
+                    {a.severity === 'critical' ? 'Out ' : 'Low '}
+                    {formatAlertDuration(a.days)}
                   </td>
                   <td className="muted">{a.issue}</td>
                 </tr>

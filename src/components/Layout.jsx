@@ -10,6 +10,7 @@ const NAV = [
   {to: '/restock', label: 'Restock', icon: '🔄'},
   {to: '/alerts', label: 'Alerts', icon: '🔔'},
   {to: '/products', label: 'Products', icon: '🏷️'},
+  {to: '/insights', label: 'Insights', icon: '✨'},
 ];
 
 const COLLAPSE_KEY = 'yuma_nav_collapsed';
