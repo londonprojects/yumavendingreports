@@ -8,6 +8,7 @@ const NAV = [
   {to: '/machines', label: 'Machines', icon: '🏪'},
   {to: '/inventory', label: 'Inventory', icon: '📦'},
   {to: '/restock', label: 'Restock', icon: '🔄'},
+  {to: '/schedule', label: 'Schedule', icon: '🗓️'},
   {to: '/alerts', label: 'Alerts', icon: '🔔'},
   {to: '/products', label: 'Products', icon: '🏷️'},
   {to: '/insights', label: 'Insights', icon: '✨'},

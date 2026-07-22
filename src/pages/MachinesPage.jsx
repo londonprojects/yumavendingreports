@@ -6,7 +6,7 @@ import {MachinesMap} from '../components/MachinesMap';
 import {palette} from '../theme';
 import {getCurrencySymbol} from '../api';
 import {buildRestockPriority} from '../api/insights';
-import {extractPlaceQuery, geocodePlaces, geocodeKey} from '../api/geocode';
+import {extractPlaceQuery, geocodePlaces, geocodeKey, splitGeographicOutliers} from '../api/geocode';
 
 // Small at-a-glance restock indicator for a machine card: severity-colored dot
 // plus, once sales history is in, the estimated daily profit lost to letting
@@ -64,7 +64,7 @@ const MachinesPage = () => {
     };
   }, [devices]);
 
-  const mapPins = useMemo(() => {
+  const geocodedPins = useMemo(() => {
     return devices
       .map(d => {
         const hit = geocoded[geocodeKey(extractPlaceQuery(d.name), d.timeZone)];
@@ -74,10 +74,18 @@ const MachinesPage = () => {
       .filter(Boolean);
   }, [devices, geocoded]);
 
+  // Country-biasing fixes most wrong-continent mismatches, but a bad/default
+  // time zone on the source data can still let one through — this catches
+  // whatever's left as a sanity check against the rest of the resolved fleet.
+  const {trusted: mapPins, outliers} = useMemo(() => splitGeographicOutliers(geocodedPins), [geocodedPins]);
+
   const unresolvedDevices = useMemo(() => {
     if (geocoding) return [];
-    return devices.filter(d => !geocoded[geocodeKey(extractPlaceQuery(d.name), d.timeZone)]);
-  }, [devices, geocoded, geocoding]);
+    const outlierIds = new Set(outliers.map(p => p.deviceId));
+    return devices.filter(
+      d => !geocoded[geocodeKey(extractPlaceQuery(d.name), d.timeZone)] || outlierIds.has(d.id),
+    );
+  }, [devices, geocoded, geocoding, outliers]);
 
   // Stock per machine, derived from the inventory endpoint's per-market data.
   const stockByMachine = useMemo(() => {

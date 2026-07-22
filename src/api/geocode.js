@@ -7,6 +7,8 @@
 // estate/building names can resolve to the wrong place, and names that aren't
 // real addresses at all (demo/showroom units) simply won't resolve.
 
+import {haversineKm} from './routing';
+
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
 const CACHE_KEY = 'yuma_geocode_cache_v2';
 // Nominatim's usage policy caps free use at ~1 request/second.
@@ -163,6 +165,33 @@ export const geocodePlaces = async items => {
     results[key] = cache[key] ?? null;
   });
   return results;
+};
+
+// Country-biasing (see geocodePlaces) fixes most wrong-continent mismatches,
+// but a bad/placeholder time zone on the source data can still let one
+// through with high apparent confidence (a real hit, just for the wrong
+// place — e.g. "Cuba Street" matching a real Cuba Street on another
+// continent). This is a sanity backstop: with enough resolved points to
+// establish where a fleet actually operates, anything far outside that
+// cluster is flagged as an outlier rather than trusted. Needs at least
+// `minPoints` entries to bother — with only a couple of pins there's no
+// reliable "normal" to compare against.
+export const splitGeographicOutliers = (pins, {minPoints = 4, thresholdKm = 150} = {}) => {
+  if (pins.length < minPoints) return {trusted: pins, outliers: []};
+
+  const centroid = {
+    lat: pins.reduce((s, p) => s + p.lat, 0) / pins.length,
+    lng: pins.reduce((s, p) => s + p.lng, 0) / pins.length,
+  };
+  const distances = pins.map(p => haversineKm(centroid, p));
+  const sorted = [...distances].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const cutoff = Math.max(thresholdKm, median * 4);
+
+  const trusted = [];
+  const outliers = [];
+  pins.forEach((p, i) => (distances[i] > cutoff ? outliers.push(p) : trusted.push(p)));
+  return {trusted, outliers};
 };
 
 // Same cache-key derivation `geocodePlaces` uses internally — callers need
