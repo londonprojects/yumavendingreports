@@ -77,7 +77,10 @@ export default {
         },
         body: JSON.stringify({
           model: env.KIMI_MODEL || DEFAULT_MODEL,
-          temperature: 0.3,
+          // This model rejects any value but 1 (the API's own default appears
+          // to be something else, since omitting the field still errored) —
+          // set explicitly rather than relying on a default.
+          temperature: 1,
           messages: [
             {role: 'system', content: `${BASE_PROMPT}\n\n${task}`},
             {role: 'user', content: summaryText},
