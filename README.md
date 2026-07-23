@@ -42,8 +42,8 @@ directly. In development, requests are proxied through Vite:
 | `/haha-test`  | `https://thor-openapi-test.hahavending.com`    |
 | `/haha-prod`  | `https://thor-openapi.hahavending.com`         |
 
-See `vite.config.js`. For a production deployment, serve the built `dist/` behind
-a reverse proxy that forwards the same two prefixes to the HAHA hosts.
+See `vite.config.js`. In production (Cloudflare Workers), the same two prefixes
+are proxied by `worker/index.js` — see `wrangler.jsonc`'s `run_worker_first`.
 
 ## Structure
 
